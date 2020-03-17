@@ -18,7 +18,6 @@ limitations under the License.
 package remote
 
 import (
-	"context"
 	"sync"
 	"time"
 
@@ -36,18 +35,16 @@ type ResponseFuture struct {
 	BeginTimestamp  time.Duration
 	Done            chan bool
 	callbackOnce    sync.Once
-	ctx             context.Context
 }
 
 // NewResponseFuture create ResponseFuture with opaque, timeout and callback
-func NewResponseFuture(ctx context.Context, opaque int32, timeout time.Duration, callback func(*ResponseFuture)) *ResponseFuture {
+func NewResponseFuture(opaque int32, timeout time.Duration, callback func(*ResponseFuture)) *ResponseFuture {
 	return &ResponseFuture{
 		Opaque:         opaque,
 		Done:           make(chan bool),
 		Timeout:        timeout,
 		callback:       callback,
 		BeginTimestamp: time.Duration(time.Now().Unix()) * time.Second,
-		ctx:            ctx,
 	}
 }
 
@@ -69,19 +66,19 @@ func (r *ResponseFuture) waitResponse() (*RemotingCommand, error) {
 		cmd *RemotingCommand
 		err error
 	)
-	ctx, cancel := context.WithTimeout(r.ctx, r.Timeout)
-	defer cancel()
+	timer := time.NewTimer(r.Timeout)
 	for {
 		select {
 		case <-r.Done:
 			cmd, err = r.ResponseCommand, r.Err
 			goto done
-		case <-ctx.Done():
+		case <-timer.C:
 			err = utils.ErrRequestTimeout
 			r.Err = err
 			goto done
 		}
 	}
 done:
+	timer.Stop()
 	return cmd, err
 }

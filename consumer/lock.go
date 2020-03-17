@@ -28,7 +28,8 @@ type QueueLock struct {
 }
 
 func newQueueLock() *QueueLock {
-	return &QueueLock{}
+	return &QueueLock{
+	}
 }
 
 func (ql QueueLock) fetchLock(queue primitive.MessageQueue) sync.Locker {

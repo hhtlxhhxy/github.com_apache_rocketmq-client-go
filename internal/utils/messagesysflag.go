@@ -15,34 +15,30 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package internal
+package utils
 
-const (
-	ResSuccess              = int16(0)
-	ResFlushDiskTimeout     = int16(10)
-	ResSlaveNotAvailable    = int16(11)
-	ResFlushSlaveTimeout    = int16(12)
-	ResTopicNotExist        = int16(17)
-	ResPullNotFound         = int16(19)
-	ResPullRetryImmediately = int16(20)
-	ResPullOffsetMoved      = int16(21)
+var (
+	CompressedFlag = 0x1
+
+	MultiTagsFlag = 0x1 << 1
+
+	TransactionNotType = 0
+
+	TransactionPreparedType = 0x1 << 2
+
+	TransactionCommitType = 0x2 << 2
+
+	TransactionRollbackType = 0x3 << 2
 )
 
-type SendMessageResponse struct {
-	MsgId         string
-	QueueId       int32
-	QueueOffset   int64
-	TransactionId string
-	MsgRegion     string
+func GetTransactionValue(flag int) int {
+	return flag & TransactionRollbackType
 }
 
-func (response *SendMessageResponse) Decode(properties map[string]string) {
-
+func ResetTransactionValue(flag int, typeFlag int) int {
+	return (flag & (^TransactionRollbackType)) | typeFlag
 }
 
-type PullMessageResponse struct {
-	SuggestWhichBrokerId int64
-	NextBeginOffset      int64
-	MinOffset            int64
-	MaxOffset            int64
+func ClearCompressedFlag(flag int) int {
+	return flag & (^CompressedFlag)
 }

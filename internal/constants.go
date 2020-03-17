@@ -21,7 +21,6 @@ const (
 	RetryGroupTopicPrefix    = "%RETRY%"
 	DefaultConsumerGroup     = "DEFAULT_CONSUMER"
 	ClientInnerProducerGroup = "CLIENT_INNER_PRODUCER"
-	SystemTopicPrefix        = "rmq_sys_"
 )
 
 func GetRetryTopic(group string) string {

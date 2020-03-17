@@ -19,12 +19,10 @@ package consumer
 
 import (
 	"container/list"
-	"fmt"
+	"github.com/apache/rocketmq-client-go/rlog"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/apache/rocketmq-client-go/rlog"
 )
 
 var (
@@ -39,8 +37,8 @@ var (
 
 func init() {
 	topicAndGroupConsumeOKTPS = newStatsItemSet("CONSUME_OK_TPS")
-	topicAndGroupConsumeRT = newStatsItemSet("CONSUME_RT")
-	topicAndGroupConsumeFailedTPS = newStatsItemSet("CONSUME_FAILED_TPS")
+	topicAndGroupConsumeRT = newStatsItemSet("CONSUME_FAILED_TPS")
+	topicAndGroupConsumeFailedTPS = newStatsItemSet("CONSUME_RT")
 	topicAndGroupPullTPS = newStatsItemSet("PULL_TPS")
 	topicAndGroupPullRT = newStatsItemSet("PULL_RT")
 }
@@ -359,35 +357,20 @@ func (si *statsItem) samplingInHour() {
 
 func (si *statsItem) printAtMinutes() {
 	ss := computeStatsData(si.csListMinute)
-	rlog.Info("Stats In One Minute, SUM: %d TPS:  AVGPT: %.2f", map[string]interface{}{
-		"statsName": si.statsName,
-		"statsKey":  si.statsKey,
-		"SUM":       ss.sum,
-		"TPS":       fmt.Sprintf("%.2f", ss.tps),
-		"AVGPT":     ss.avgpt,
-	})
+	rlog.Infof("[%s] [%s] Stats In One Minute, SUM: %d TPS: %.2f AVGPT: %.2f",
+		si.statsName, si.statsKey, ss.sum, ss.tps, ss.avgpt)
 }
 
 func (si *statsItem) printAtHour() {
 	ss := computeStatsData(si.csListHour)
-	rlog.Info("Stats In One Hour, SUM: %d TPS:  AVGPT: %.2f", map[string]interface{}{
-		"statsName": si.statsName,
-		"statsKey":  si.statsKey,
-		"SUM":       ss.sum,
-		"TPS":       fmt.Sprintf("%.2f", ss.tps),
-		"AVGPT":     ss.avgpt,
-	})
+	rlog.Infof("[%s] [%s] Stats In One Hour, SUM: %d TPS: %.2f AVGPT: %.2f",
+		si.statsName, si.statsKey, ss.sum, ss.tps, ss.avgpt)
 }
 
 func (si *statsItem) printAtDay() {
 	ss := computeStatsData(si.csListDay)
-	rlog.Info("Stats In One Day, SUM: %d TPS:  AVGPT: %.2f", map[string]interface{}{
-		"statsName": si.statsName,
-		"statsKey":  si.statsKey,
-		"SUM":       ss.sum,
-		"TPS":       fmt.Sprintf("%.2f", ss.tps),
-		"AVGPT":     ss.avgpt,
-	})
+	rlog.Infof("[%s] [%s] Stats In One Day, SUM: %d TPS: %.2f AVGPT: %.2f",
+		si.statsName, si.statsKey, ss.sum, ss.tps, ss.avgpt)
 }
 
 func nextMinutesTime() time.Time {

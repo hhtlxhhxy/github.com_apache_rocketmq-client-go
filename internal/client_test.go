@@ -17,32 +17,29 @@ limitations under the License.
 
 package internal
 
-const (
-	ResSuccess              = int16(0)
-	ResFlushDiskTimeout     = int16(10)
-	ResSlaveNotAvailable    = int16(11)
-	ResFlushSlaveTimeout    = int16(12)
-	ResTopicNotExist        = int16(17)
-	ResPullNotFound         = int16(19)
-	ResPullRetryImmediately = int16(20)
-	ResPullOffsetMoved      = int16(21)
+import (
+	"context"
+	"testing"
 )
 
-type SendMessageResponse struct {
-	MsgId         string
-	QueueId       int32
-	QueueOffset   int64
-	TransactionId string
-	MsgRegion     string
-}
+func TestRMQClient_PullMessage(t *testing.T) {
+	client := GetOrNewRocketMQClient(ClientOptions{})
+	req := &PullMessageRequest{
+		ConsumerGroup:  "testGroup",
+		Topic:          "wenfeng",
+		QueueId:        0,
+		QueueOffset:    0,
+		MaxMsgNums:     32,
+		SysFlag:        0x1 << 2,
+		SubExpression:  "*",
+		ExpressionType: "TAG",
+	}
+	res, err := client.PullMessage(context.Background(), "127.0.0.1:10911", req)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
 
-func (response *SendMessageResponse) Decode(properties map[string]string) {
-
-}
-
-type PullMessageResponse struct {
-	SuggestWhichBrokerId int64
-	NextBeginOffset      int64
-	MinOffset            int64
-	MaxOffset            int64
+	for _, a := range res.GetMessageExts() {
+		t.Log(string(a.Body))
+	}
 }

@@ -113,7 +113,6 @@ func defaultPushConsumerOptions() consumerOptions {
 		MaxTimeConsumeContinuously: time.Duration(60 * time.Second),
 		RebalanceLockInterval:      20 * time.Second,
 		MaxReconsumeTimes:          -1,
-		ConsumerModel:              Clustering,
 		AutoCommit:                 true,
 	}
 	opts.ClientOptions.GroupName = "DEFAULT_CONSUMER"
@@ -148,12 +147,6 @@ func WithConsumerOrder(order bool) Option {
 	}
 }
 
-func WithConsumeMessageBatchMaxSize(consumeMessageBatchMaxSize int) Option {
-	return func(options *consumerOptions) {
-		options.ConsumeMessageBatchMaxSize = consumeMessageBatchMaxSize
-	}
-}
-
 // WithChainConsumerInterceptor returns a ConsumerOption that specifies the chained interceptor for consumer.
 // The first interceptor will be the outer most, while the last interceptor will be the inner most wrapper
 // around the real call.
@@ -173,23 +166,12 @@ func WithGroupName(group string) Option {
 	}
 }
 
-func WithInstance(name string) Option {
-	return func(options *consumerOptions) {
-		options.InstanceName = name
-	}
-}
-
 // WithNameServer set NameServer address, only support one NameServer cluster in alpha2
-func WithNameServer(nameServers primitive.NamesrvAddr) Option {
+func WithNameServer(nameServers []string) Option {
 	return func(opts *consumerOptions) {
-		opts.NameServerAddrs = nameServers
-	}
-}
-
-// WithNamespace set the namespace of consumer
-func WithNamespace(namespace string) Option {
-	return func(opts *consumerOptions) {
-		opts.Namespace = namespace
+		if len(nameServers) > 0 {
+			opts.NameServerAddrs = nameServers
+		}
 	}
 }
 
@@ -218,11 +200,5 @@ func WithCredentials(c primitive.Credentials) Option {
 func WithMaxReconsumeTimes(times int32) Option {
 	return func(opts *consumerOptions) {
 		opts.MaxReconsumeTimes = times
-	}
-}
-
-func WithStrategy(strategy AllocateStrategy) Option {
-	return func(opts *consumerOptions) {
-		opts.Strategy = strategy
 	}
 }

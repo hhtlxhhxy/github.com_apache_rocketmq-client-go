@@ -41,13 +41,14 @@ func FileReadAll(path string) ([]byte, error) {
 	return data, nil
 }
 
-func ensureDir(path string) error {
+func MakeFileIfNotExist(path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			err = os.MkdirAll(path, 0755)
+			if err = os.MkdirAll(path, 0755); err != nil {
+				return err
+			}
 		}
-		return err
 	}
 	if !info.IsDir() {
 		return errors.New(path + " is a file")
@@ -56,7 +57,7 @@ func ensureDir(path string) error {
 }
 
 func WriteToFile(path string, data []byte) error {
-	if err := ensureDir(filepath.Dir(path)); err != nil {
+	if err := MakeFileIfNotExist(filepath.Dir(path)); err != nil {
 		return err
 	}
 	tmpFile, err := os.Create(path + ".tmp")
@@ -72,18 +73,12 @@ func WriteToFile(path string, data []byte) error {
 	prevContent, err := FileReadAll(path)
 	if err == nil {
 		bakFile, err := os.Create(path + ".bak")
-		if err != nil {
-			_, err = bakFile.Write(prevContent)
-		}
+		_, err = bakFile.Write(prevContent)
 		if err != nil {
 			return err
 		}
 		CheckError(fmt.Sprintf("close %s", bakFile.Name()), bakFile.Close())
 	}
-
-	_, err = os.Stat(path)
-	if err == nil {
-		CheckError(fmt.Sprintf("remove %s", path), os.Remove(path))
-	}
+	CheckError(fmt.Sprintf("remove %s", path), os.Remove(path))
 	return os.Rename(path+".tmp", path)
 }

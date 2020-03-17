@@ -34,7 +34,7 @@ var (
 
 func ValidateGroup(group string) {
 	if group == "" {
-		rlog.Fatal("consumerGroup is empty", nil)
+		rlog.Fatal("consumerGroup is empty")
 	}
 
 	//if !_Pattern.Match([]byte(group)) {
@@ -42,6 +42,6 @@ func ValidateGroup(group string) {
 	//}
 
 	if len(group) > _CharacterMaxLength {
-		rlog.Fatal("the specified group is longer than group max length 255.", nil)
+		rlog.Fatal("the specified group is longer than group max length 255.")
 	}
 }

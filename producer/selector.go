@@ -18,7 +18,6 @@ limitations under the License.
 package producer
 
 import (
-	"hash/fnv"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -28,7 +27,7 @@ import (
 )
 
 type QueueSelector interface {
-	Select(*primitive.Message, []*primitive.MessageQueue) *primitive.MessageQueue
+	Select(*primitive.Message, int) int
 }
 
 // manualQueueSelector use the queue manually set in the provided Message's QueueID  field as the queue to send.
@@ -38,8 +37,8 @@ func NewManualQueueSelector() QueueSelector {
 	return new(manualQueueSelector)
 }
 
-func (manualQueueSelector) Select(message *primitive.Message, queues []*primitive.MessageQueue) *primitive.MessageQueue {
-	return message.Queue
+func (manualQueueSelector) Select(message *primitive.Message, queues int) int {
+	return message.QueueID
 }
 
 // randomQueueSelector choose a random queue each time.
@@ -53,9 +52,8 @@ func NewRandomQueueSelector() QueueSelector {
 	return s
 }
 
-func (r randomQueueSelector) Select(message *primitive.Message, queues []*primitive.MessageQueue) *primitive.MessageQueue {
-	i := r.rander.Intn(len(queues))
-	return queues[i]
+func (r randomQueueSelector) Select(message *primitive.Message, queues int) int {
+	return r.rander.Intn(queues)
 }
 
 // roundRobinQueueSelector choose the queue by roundRobin.
@@ -72,7 +70,7 @@ func NewRoundRobinQueueSelector() QueueSelector {
 	return s
 }
 
-func (r *roundRobinQueueSelector) Select(message *primitive.Message, queues []*primitive.MessageQueue) *primitive.MessageQueue {
+func (r *roundRobinQueueSelector) Select(message *primitive.Message, queues int) int {
 	t := message.Topic
 	if _, exist := r.indexer[t]; !exist {
 		r.Lock()
@@ -89,35 +87,5 @@ func (r *roundRobinQueueSelector) Select(message *primitive.Message, queues []*p
 		i = -i
 		atomic.StoreInt32(index, 0)
 	}
-	qIndex := int(i) % len(queues)
-	return queues[qIndex]
-}
-
-type hashQueueSelector struct {
-	random QueueSelector
-}
-
-func NewHashQueueSelector() QueueSelector {
-	return &hashQueueSelector{
-		random: NewRandomQueueSelector(),
-	}
-}
-
-// hashQueueSelector choose the queue by hash if message having sharding key, otherwise choose queue by random instead.
-func (h *hashQueueSelector) Select(message *primitive.Message, queues []*primitive.MessageQueue) *primitive.MessageQueue {
-	key := message.GetShardingKey()
-	if len(key) == 0 {
-		return h.random.Select(message, queues)
-	}
-
-	hasher := fnv.New32a()
-	_, err := hasher.Write([]byte(key))
-	if err != nil {
-		return nil
-	}
-	queueId := int(hasher.Sum32()) % len(queues)
-	if queueId < 0 {
-		queueId = -queueId
-	}
-	return queues[queueId]
+	return int(i) % queues
 }

@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"sync"
 
 	"github.com/apache/rocketmq-client-go"
@@ -51,7 +52,11 @@ func main() {
 					fmt.Printf("send message success: result=%s\n", result.String())
 				}
 				wg.Done()
-			}, primitive.NewMessage("test", []byte("Hello RocketMQ Go Client!")))
+			}, &primitive.Message{
+				Topic:      "TopicTest",
+				Body:       []byte("Hello RocketMQ Go Client!"),
+				Properties: map[string]string{"id": strconv.Itoa(i)},
+			})
 
 		if err != nil {
 			fmt.Printf("send message error: %s\n", err)
