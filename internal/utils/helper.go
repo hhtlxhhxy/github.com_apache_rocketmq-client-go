@@ -19,64 +19,24 @@ package utils
 
 import (
 	"bytes"
-	"encoding/binary"
-	"fmt"
-	"os"
-	"sync"
-	"time"
+	"compress/zlib"
+	"io/ioutil"
+	"net"
 )
-
-var (
-	counter        int16 = 0
-	startTimestamp int64 = 0
-	nextTimestamp  int64 = 0
-	prefix         string
-	locker         sync.Mutex
-)
-
-func MessageClientID() string {
-	locker.Lock()
-	defer locker.Unlock()
-	if prefix == "" {
-		buf := new(bytes.Buffer)
-		binary.Write(buf, binary.BigEndian, LocalIP())
-		binary.Write(buf, binary.BigEndian, Pid())
-		binary.Write(buf, binary.BigEndian, ClassLoaderID())
-		prefix = fmt.Sprintf("%x", buf.Bytes())
-	}
-	if time.Now().Unix() > nextTimestamp {
-		updateTimestamp()
-	}
-	counter++
-	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, int32((time.Now().Unix()-startTimestamp)*1000))
-	binary.Write(buf, binary.BigEndian, counter)
-	return prefix + fmt.Sprintf("%x", buf.Bytes())
-
-}
-
-func updateTimestamp() {
-	year, month := time.Now().Year(), time.Now().Month()
-	startTimestamp = time.Date(year, month, 1, 0, 0, 0, 0, time.Local).Unix()
-	nextTimestamp = time.Date(year, month, 1, 0, 0, 0, 0, time.Local).AddDate(0, 1, 0).Unix()
-}
 
 func GetAddressByBytes(data []byte) string {
-	return "127.0.0.1"
-}
-
-func Pid() int16 {
-	return int16(os.Getpid())
-}
-
-func ClassLoaderID() int32 {
-	return 0
+	return net.IPv4(data[0], data[1], data[2], data[3]).String()
 }
 
 func UnCompress(data []byte) []byte {
-	return data
-}
-
-func IsArrayEmpty(i ...interface{}) bool {
-	return len(i) == 0
+	rdata := bytes.NewReader(data)
+	r, err := zlib.NewReader(rdata)
+	if err != nil {
+		return data
+	}
+	retData, err := ioutil.ReadAll(r)
+	if err != nil {
+		return data
+	}
+	return retData
 }

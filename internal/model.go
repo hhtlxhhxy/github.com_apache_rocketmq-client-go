@@ -20,6 +20,7 @@ package internal
 import (
 	"encoding/json"
 
+	"github.com/apache/rocketmq-client-go/internal/utils"
 	"github.com/apache/rocketmq-client-go/rlog"
 )
 
@@ -31,8 +32,6 @@ type FindBrokerResult struct {
 
 type (
 	// groupName of consumer
-	producerData string
-
 	consumeType string
 
 	ServiceState int
@@ -46,13 +45,21 @@ const (
 )
 
 type SubscriptionData struct {
-	ClassFilterMode bool
-	Topic           string
-	SubString       string
-	Tags            map[string]bool
-	Codes           map[int32]bool
-	SubVersion      int64
-	ExpType         string
+	ClassFilterMode bool      `json:"classFilterMode"`
+	Topic           string    `json:"topic"`
+	SubString       string    `json:"subString"`
+	Tags            utils.Set `json:"tagsSet"`
+	Codes           utils.Set `json:"codeSet"`
+	SubVersion      int64     `json:"subVersion"`
+	ExpType         string    `json:"expressionType"`
+}
+
+type producerData struct {
+	GroupName string `json:"groupName"`
+}
+
+func (p producerData) UniqueID() string {
+	return p.GroupName
 }
 
 type consumerData struct {
@@ -64,18 +71,32 @@ type consumerData struct {
 	UnitMode          bool                `json:"unitMode"`
 }
 
+func (c consumerData) UniqueID() string {
+	return c.GroupName
+}
+
 type heartbeatData struct {
-	ClientId      string         `json:"clientID"`
-	ProducerDatas []producerData `json:"producerDataSet"`
-	ConsumerDatas []consumerData `json:"consumerDataSet"`
+	ClientId      string    `json:"clientID"`
+	ProducerDatas utils.Set `json:"producerDataSet"`
+	ConsumerDatas utils.Set `json:"consumerDataSet"`
+}
+
+func NewHeartbeatData(clientID string) *heartbeatData {
+	return &heartbeatData{
+		ClientId:      clientID,
+		ProducerDatas: utils.NewSet(),
+		ConsumerDatas: utils.NewSet(),
+	}
 }
 
 func (data *heartbeatData) encode() []byte {
 	d, err := json.Marshal(data)
 	if err != nil {
-		rlog.Errorf("marshal heartbeatData error: %s", err.Error())
+		rlog.Error("marshal heartbeatData error", map[string]interface{}{
+			rlog.LogKeyUnderlayError: err,
+		})
 		return nil
 	}
-	rlog.Info(string(d))
+	rlog.Debug("heartbeat: "+string(d), nil)
 	return d
 }

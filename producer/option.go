@@ -18,14 +18,17 @@ limitations under the License.
 package producer
 
 import (
+	"time"
+
 	"github.com/apache/rocketmq-client-go/internal"
 	"github.com/apache/rocketmq-client-go/primitive"
 )
 
 func defaultProducerOptions() producerOptions {
 	opts := producerOptions{
-		ClientOptions: internal.DefaultClientOptions(),
-		Selector:      NewRoundRobinQueueSelector(),
+		ClientOptions:  internal.DefaultClientOptions(),
+		Selector:       NewHashQueueSelector(),
+		SendMsgTimeout: 3 * time.Second,
 	}
 	opts.ClientOptions.GroupName = "DEFAULT_CONSUMER"
 	return opts
@@ -33,7 +36,8 @@ func defaultProducerOptions() producerOptions {
 
 type producerOptions struct {
 	internal.ClientOptions
-	Selector QueueSelector
+	Selector       QueueSelector
+	SendMsgTimeout time.Duration
 }
 
 type Option func(*producerOptions)
@@ -48,12 +52,29 @@ func WithGroupName(group string) Option {
 	}
 }
 
-// WithNameServer set NameServer address, only support one NameServer cluster in alpha2
-func WithNameServer(nameServers []string) Option {
+func WithInstanceName(name string) Option {
 	return func(opts *producerOptions) {
-		if len(nameServers) > 0 {
-			opts.NameServerAddrs = nameServers
-		}
+		opts.InstanceName = name
+	}
+}
+
+// WithNameServer set NameServer address, only support one NameServer cluster in alpha2
+func WithNameServer(nameServers primitive.NamesrvAddr) Option {
+	return func(opts *producerOptions) {
+		opts.NameServerAddrs = nameServers
+	}
+}
+
+// WithNamespace set the namespace of producer
+func WithNamespace(namespace string) Option {
+	return func(opts *producerOptions) {
+		opts.Namespace = namespace
+	}
+}
+
+func WithSendMsgTimeout(duration time.Duration) Option {
+	return func(opts *producerOptions) {
+		opts.SendMsgTimeout = duration
 	}
 }
 

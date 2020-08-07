@@ -18,21 +18,23 @@ limitations under the License.
 package utils
 
 import (
+	"errors"
+
 	"github.com/apache/rocketmq-client-go/rlog"
-	"github.com/pkg/errors"
 )
 
 var (
 	// ErrRequestTimeout for request timeout error
 	ErrRequestTimeout = errors.New("request timeout")
-
-	ErrMQEmpty = errors.New("MessageQueue is nil")
-	ErrOffset  = errors.New("offset < 0")
-	ErrNumbers = errors.New("numbers < 0")
+	ErrMQEmpty        = errors.New("MessageQueue is nil")
+	ErrOffset         = errors.New("offset < 0")
+	ErrNumbers        = errors.New("numbers < 0")
 )
 
 func CheckError(action string, err error) {
 	if err != nil {
-		rlog.Errorf("%s error: %s", action, err.Error())
+		rlog.Error(action, map[string]interface{}{
+			rlog.LogKeyUnderlayError: err.Error(),
+		})
 	}
 }

@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -88,38 +89,39 @@ func DefaultClientOptions() ClientOptions {
 	opts := ClientOptions{
 		InstanceName: "DEFAULT",
 		RetryTimes:   3,
-		ClientIP:     utils.LocalIP(),
+		ClientIP:     utils.LocalIP,
 	}
 	return opts
 }
 
 type ClientOptions struct {
 	GroupName         string
-	NameServerAddrs   []string
+	NameServerAddrs   primitive.NamesrvAddr
+	Namesrv           *namesrvs
 	ClientIP          string
 	InstanceName      string
 	UnitMode          bool
 	UnitName          string
 	VIPChannelEnabled bool
-	ACLEnabled        bool
 	RetryTimes        int
 	Interceptors      []primitive.Interceptor
 	Credentials       primitive.Credentials
+	Namespace         string
 }
 
 func (opt *ClientOptions) ChangeInstanceNameToPID() {
 	if opt.InstanceName == "DEFAULT" {
-		opt.InstanceName = strconv.Itoa(os.Getegid())
+		opt.InstanceName = strconv.Itoa(os.Getpid())
 	}
 }
 
 func (opt *ClientOptions) String() string {
 	return fmt.Sprintf("ClientOption [ClientIP=%s, InstanceName=%s, "+
-		"UnitMode=%v, UnitName=%s, VIPChannelEnabled=%v, ACLEnabled=%v]", opt.ClientIP,
-		opt.InstanceName, opt.UnitMode, opt.UnitName, opt.VIPChannelEnabled, opt.ACLEnabled)
+		"UnitMode=%v, UnitName=%s, VIPChannelEnabled=%v]", opt.ClientIP,
+		opt.InstanceName, opt.UnitMode, opt.UnitName, opt.VIPChannelEnabled)
 }
 
-//go:generate mockgen -source client.go -destination mock_client.go --package internal RMQClient
+//go:generate mockgen -source client.go -destination mock_client.go -self_package github.com/apache/rocketmq-client-go/internal  --package internal RMQClient
 type RMQClient interface {
 	Start()
 	Shutdown()
@@ -127,11 +129,11 @@ type RMQClient interface {
 	ClientID() string
 
 	RegisterProducer(group string, producer InnerProducer)
-	InvokeSync(addr string, request *remote.RemotingCommand,
+	InvokeSync(ctx context.Context, addr string, request *remote.RemotingCommand,
 		timeoutMillis time.Duration) (*remote.RemotingCommand, error)
-	InvokeAsync(addr string, request *remote.RemotingCommand,
+	InvokeAsync(ctx context.Context, addr string, request *remote.RemotingCommand,
 		timeoutMillis time.Duration, f func(*remote.RemotingCommand, error)) error
-	InvokeOneWay(addr string, request *remote.RemotingCommand,
+	InvokeOneWay(ctx context.Context, addr string, request *remote.RemotingCommand,
 		timeoutMillis time.Duration) error
 	CheckClientInBroker()
 	SendHeartbeatToAllBrokerWithLock()
@@ -141,8 +143,8 @@ type RMQClient interface {
 
 	RegisterConsumer(group string, consumer InnerConsumer) error
 	UnregisterConsumer(group string)
-	PullMessage(ctx context.Context, brokerAddrs string, request *PullMessageRequest) (*primitive.PullResult, error)
-	PullMessageAsync(ctx context.Context, brokerAddrs string, request *PullMessageRequest, f func(result *primitive.PullResult)) error
+	PullMessage(ctx context.Context, brokerAddrs string, request *PullMessageRequestHeader) (*primitive.PullResult, error)
+	PullMessageAsync(ctx context.Context, brokerAddrs string, request *PullMessageRequestHeader, f func(result *primitive.PullResult)) error
 	RebalanceImmediately()
 	UpdatePublishInfo(topic string, data *TopicRouteData)
 }
@@ -158,24 +160,66 @@ type rmqClient struct {
 	consumerMap sync.Map
 	once        sync.Once
 
-	remoteClient *remote.RemotingClient
+	remoteClient remote.RemotingClient
 	hbMutex      sync.Mutex
 	close        bool
+	namesrvs     *namesrvs
 }
 
 var clientMap sync.Map
 
-func GetOrNewRocketMQClient(option ClientOptions) *rmqClient {
+func GetOrNewRocketMQClient(option ClientOptions, callbackCh chan interface{}) *rmqClient {
 	client := &rmqClient{
 		option:       option,
 		remoteClient: remote.NewRemotingClient(),
+		namesrvs:     option.Namesrv,
 	}
 	actual, loaded := clientMap.LoadOrStore(client.ClientID(), client)
 	if !loaded {
-		client.remoteClient.RegisterRequestFunc(ReqNotifyConsumerIdsChanged, func(req *remote.RemotingCommand) *remote.RemotingCommand {
-			rlog.Infof("receive broker's notification, the consumer group: %s", req.ExtFields["consumerGroup"])
+		client.remoteClient.RegisterRequestFunc(ReqNotifyConsumerIdsChanged, func(req *remote.RemotingCommand, addr net.Addr) *remote.RemotingCommand {
+			rlog.Info("receive broker's notification to consumer group", map[string]interface{}{
+				rlog.LogKeyConsumerGroup: req.ExtFields["consumerGroup"],
+			})
 			client.RebalanceImmediately()
 			return nil
+		})
+		client.remoteClient.RegisterRequestFunc(ReqCheckTransactionState, func(req *remote.RemotingCommand, addr net.Addr) *remote.RemotingCommand {
+			header := new(CheckTransactionStateRequestHeader)
+			header.Decode(req.ExtFields)
+			msgExts := primitive.DecodeMessage(req.Body)
+			if len(msgExts) == 0 {
+				rlog.Warning("checkTransactionState, decode message failed", nil)
+				return nil
+			}
+			msgExt := msgExts[0]
+			// TODO: add namespace support
+			transactionID := msgExt.GetProperty(primitive.PropertyUniqueClientMessageIdKeyIndex)
+			if len(transactionID) > 0 {
+				msgExt.TransactionId = transactionID
+			}
+			group := msgExt.GetProperty(primitive.PropertyProducerGroup)
+			if group == "" {
+				rlog.Warning("checkTransactionState, pick producer group failed", nil)
+				return nil
+			}
+			if option.GroupName != group {
+				rlog.Warning("producer group is not equal", nil)
+				return nil
+			}
+			callback := CheckTransactionStateCallback{
+				Addr:   addr,
+				Msg:    *msgExt,
+				Header: *header,
+			}
+			callbackCh <- callback
+			return nil
+		})
+
+		client.remoteClient.RegisterRequestFunc(ReqGetConsumerRunningInfo, func(req *remote.RemotingCommand, addr net.Addr) *remote.RemotingCommand {
+			rlog.Info("receive get consumer running info request...", nil)
+			res := remote.NewRemotingCommand(ResError, nil, nil)
+			res.Remark = "the go client has not supported consumer running info"
+			return res
 		})
 	}
 	return actual.(*rmqClient)
@@ -205,7 +249,7 @@ func (c *rmqClient) Start() {
 		// TODO cleanOfflineBroker & sendHeartbeatToAllBrokerWithLock
 		go func() {
 			for !c.close {
-				cleanOfflineBroker()
+				c.namesrvs.cleanOfflineBroker()
 				c.SendHeartbeatToAllBrokerWithLock()
 				time.Sleep(_HeartbeatBrokerInterval)
 			}
@@ -219,7 +263,9 @@ func (c *rmqClient) Start() {
 					consumer := value.(InnerConsumer)
 					err := consumer.PersistConsumerOffset()
 					if err != nil {
-						rlog.Errorf("persist offset failed. err: %v", err)
+						rlog.Error("persist offset failed", map[string]interface{}{
+							rlog.LogKeyUnderlayError: err,
+						})
 					}
 					return true
 				})
@@ -249,31 +295,31 @@ func (c *rmqClient) ClientID() string {
 	return id
 }
 
-func (c *rmqClient) InvokeSync(addr string, request *remote.RemotingCommand,
+func (c *rmqClient) InvokeSync(ctx context.Context, addr string, request *remote.RemotingCommand,
 	timeoutMillis time.Duration) (*remote.RemotingCommand, error) {
 	if c.close {
 		return nil, ErrServiceState
 	}
-	return c.remoteClient.InvokeSync(addr, request, timeoutMillis)
+	return c.remoteClient.InvokeSync(ctx, addr, request, timeoutMillis)
 }
 
-func (c *rmqClient) InvokeAsync(addr string, request *remote.RemotingCommand,
+func (c *rmqClient) InvokeAsync(ctx context.Context, addr string, request *remote.RemotingCommand,
 	timeoutMillis time.Duration, f func(*remote.RemotingCommand, error)) error {
 	if c.close {
 		return ErrServiceState
 	}
-	return c.remoteClient.InvokeAsync(addr, request, timeoutMillis, func(future *remote.ResponseFuture) {
+	return c.remoteClient.InvokeAsync(ctx, addr, request, timeoutMillis, func(future *remote.ResponseFuture) {
 		f(future.ResponseCommand, future.Err)
 	})
 
 }
 
-func (c *rmqClient) InvokeOneWay(addr string, request *remote.RemotingCommand,
+func (c *rmqClient) InvokeOneWay(ctx context.Context, addr string, request *remote.RemotingCommand,
 	timeoutMillis time.Duration) error {
 	if c.close {
 		return ErrServiceState
 	}
-	return c.remoteClient.InvokeOneWay(addr, request, timeoutMillis)
+	return c.remoteClient.InvokeOneWay(ctx, addr, request, timeoutMillis)
 }
 
 func (c *rmqClient) CheckClientInBroker() {
@@ -283,55 +329,60 @@ func (c *rmqClient) CheckClientInBroker() {
 func (c *rmqClient) SendHeartbeatToAllBrokerWithLock() {
 	c.hbMutex.Lock()
 	defer c.hbMutex.Unlock()
-	hbData := &heartbeatData{
-		ClientId: c.ClientID(),
-	}
-	pData := make([]producerData, 0)
+	hbData := NewHeartbeatData(c.ClientID())
+
 	c.producerMap.Range(func(key, value interface{}) bool {
-		pData = append(pData, producerData(key.(string)))
+		pData := producerData{
+			GroupName: key.(string),
+		}
+		hbData.ProducerDatas.Add(pData)
 		return true
 	})
 
-	cData := make([]consumerData, 0)
 	c.consumerMap.Range(func(key, value interface{}) bool {
 		consumer := value.(InnerConsumer)
-		cData = append(cData, consumerData{
+		cData := consumerData{
 			GroupName:         key.(string),
 			CType:             "PUSH",
 			MessageModel:      "CLUSTERING",
 			Where:             "CONSUME_FROM_FIRST_OFFSET",
 			UnitMode:          consumer.IsUnitMode(),
 			SubscriptionDatas: consumer.SubscriptionDataList(),
-		})
+		}
+		hbData.ConsumerDatas.Add(cData)
 		return true
 	})
-	hbData.ProducerDatas = pData
-	hbData.ConsumerDatas = cData
-	if len(pData) == 0 && len(cData) == 0 {
-		rlog.Info("sending heartbeat, but no producer and no consumer")
+	if hbData.ProducerDatas.Len() == 0 && hbData.ConsumerDatas.Len() == 0 {
+		rlog.Info("sending heartbeat, but no producer and no consumer", nil)
 		return
 	}
-	brokerAddressesMap.Range(func(key, value interface{}) bool {
+	c.namesrvs.brokerAddressesMap.Range(func(key, value interface{}) bool {
 		brokerName := key.(string)
 		data := value.(*BrokerData)
 		for id, addr := range data.BrokerAddresses {
 			cmd := remote.NewRemotingCommand(ReqHeartBeat, nil, hbData.encode())
-			response, err := c.remoteClient.InvokeSync(addr, cmd, 3*time.Second)
+			response, err := c.remoteClient.InvokeSync(context.Background(), addr, cmd, 3*time.Second)
 			if err != nil {
-				rlog.Warnf("send heart beat to broker error: %s", err.Error())
+				rlog.Warning("send heart beat to broker error", map[string]interface{}{
+					rlog.LogKeyUnderlayError: err,
+				})
 				return true
 			}
 			if response.Code == ResSuccess {
-				v, exist := brokerVersionMap.Load(brokerName)
+				v, exist := c.namesrvs.brokerVersionMap.Load(brokerName)
 				var m map[string]int32
 				if exist {
 					m = v.(map[string]int32)
 				} else {
 					m = make(map[string]int32, 4)
-					brokerVersionMap.Store(brokerName, m)
+					c.namesrvs.brokerVersionMap.Store(brokerName, m)
 				}
 				m[brokerName] = int32(response.Version)
-				rlog.Infof("send heart beat to broker[%s %d %s] success", brokerName, id, addr)
+				rlog.Debug("send heart beat to broker success", map[string]interface{}{
+					"brokerName": brokerName,
+					"brokerId":   id,
+					"brokerAddr": addr,
+				})
 			}
 		}
 		return true
@@ -349,7 +400,7 @@ func (c *rmqClient) UpdateTopicRouteInfo() {
 		return true
 	})
 	for topic := range publishTopicSet {
-		c.UpdatePublishInfo(topic, UpdateTopicRouteInfo(topic))
+		c.UpdatePublishInfo(topic, c.namesrvs.UpdateTopicRouteInfo(topic))
 	}
 
 	subscribedTopicSet := make(map[string]bool, 0)
@@ -363,24 +414,8 @@ func (c *rmqClient) UpdateTopicRouteInfo() {
 	})
 
 	for topic := range subscribedTopicSet {
-		c.updateSubscribeInfo(topic, UpdateTopicRouteInfo(topic))
+		c.updateSubscribeInfo(topic, c.namesrvs.UpdateTopicRouteInfo(topic))
 	}
-}
-
-// SendMessageAsync send message with batch by async
-func (c *rmqClient) SendMessageAsync(ctx context.Context, brokerAddrs, brokerName string, request *SendMessageRequest,
-	msgs []*primitive.Message, f func(result *primitive.SendResult)) error {
-	return nil
-}
-
-func (c *rmqClient) SendMessageOneWay(ctx context.Context, brokerAddrs string, request *SendMessageRequest,
-	msgs []*primitive.Message) (*primitive.SendResult, error) {
-	cmd := remote.NewRemotingCommand(ReqSendBatchMessage, request, encodeMessages(msgs))
-	err := c.remoteClient.InvokeOneWay(brokerAddrs, cmd, 3*time.Second)
-	if err != nil {
-		rlog.Warnf("send messages with oneway error: %v", err)
-	}
-	return nil, err
 }
 
 func (c *rmqClient) ProcessSendResponse(brokerName string, cmd *remote.RemotingCommand, resp *primitive.SendResult, msgs ...*primitive.Message) error {
@@ -401,7 +436,7 @@ func (c *rmqClient) ProcessSendResponse(brokerName string, cmd *remote.RemotingC
 
 	msgIDs := make([]string, 0)
 	for i := 0; i < len(msgs); i++ {
-		msgIDs = append(msgIDs, msgs[i].Properties[primitive.PropertyUniqueClientMessageIdKeyIndex])
+		msgIDs = append(msgIDs, msgs[i].GetProperty(primitive.PropertyUniqueClientMessageIdKeyIndex))
 	}
 
 	regionId := cmd.ExtFields[primitive.PropertyMsgRegion]
@@ -430,9 +465,9 @@ func (c *rmqClient) ProcessSendResponse(brokerName string, cmd *remote.RemotingC
 }
 
 // PullMessage with sync
-func (c *rmqClient) PullMessage(ctx context.Context, brokerAddrs string, request *PullMessageRequest) (*primitive.PullResult, error) {
+func (c *rmqClient) PullMessage(ctx context.Context, brokerAddrs string, request *PullMessageRequestHeader) (*primitive.PullResult, error) {
 	cmd := remote.NewRemotingCommand(ReqPullMessage, request, nil)
-	res, err := c.remoteClient.InvokeSync(brokerAddrs, cmd, 10*time.Second)
+	res, err := c.remoteClient.InvokeSync(ctx, brokerAddrs, cmd, 10*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -485,7 +520,7 @@ func (c *rmqClient) decodeCommandCustomHeader(pr *primitive.PullResult, cmd *rem
 }
 
 // PullMessageAsync pull message async
-func (c *rmqClient) PullMessageAsync(ctx context.Context, brokerAddrs string, request *PullMessageRequest, f func(result *primitive.PullResult)) error {
+func (c *rmqClient) PullMessageAsync(ctx context.Context, brokerAddrs string, request *PullMessageRequestHeader, f func(result *primitive.PullResult)) error {
 	return nil
 }
 
@@ -529,7 +564,7 @@ func (c *rmqClient) UpdatePublishInfo(topic string, data *TopicRouteData) {
 	}
 	c.producerMap.Range(func(key, value interface{}) bool {
 		p := value.(InnerProducer)
-		publishInfo := routeData2PublishInfo(topic, data)
+		publishInfo := c.namesrvs.routeData2PublishInfo(topic, data)
 		publishInfo.HaveTopicRouterInfo = true
 		p.UpdateTopicPublishInfo(topic, publishInfo)
 		return true

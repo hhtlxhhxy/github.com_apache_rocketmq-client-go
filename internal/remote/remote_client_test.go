@@ -18,8 +18,8 @@ package remote
 
 import (
 	"bytes"
+	"context"
 	"errors"
-	"github.com/apache/rocketmq-client-go/internal/utils"
 	"math/rand"
 	"net"
 	"reflect"
@@ -27,11 +27,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/apache/rocketmq-client-go/internal/utils"
+
 	"github.com/stretchr/testify/assert"
 )
 
 func TestNewResponseFuture(t *testing.T) {
-	future := NewResponseFuture(10, time.Duration(1000), nil)
+	future := NewResponseFuture(context.Background(), 10, time.Duration(1000), nil)
 	if future.Opaque != 10 {
 		t.Errorf("wrong ResponseFuture's opaque. want=%d, got=%d", 10, future.Opaque)
 	}
@@ -61,7 +63,7 @@ func TestResponseFutureTimeout(t *testing.T) {
 			r.ResponseCommand.Remark = r.ResponseCommand.Remark + "Go Client"
 		}
 	}
-	future := NewResponseFuture(10, time.Duration(1000), callback)
+	future := NewResponseFuture(context.Background(), 10, time.Duration(1000), callback)
 	future.ResponseCommand = NewRemotingCommand(200,
 		nil, nil)
 
@@ -82,24 +84,21 @@ func TestResponseFutureTimeout(t *testing.T) {
 }
 
 func TestResponseFutureIsTimeout(t *testing.T) {
-	future := NewResponseFuture(10, 500*time.Millisecond, nil)
+	future := NewResponseFuture(context.Background(), 10, 500*time.Millisecond, nil)
 	if future.isTimeout() != false {
 		t.Errorf("wrong ResponseFuture's istimeout. want=%t, got=%t", false, future.isTimeout())
 	}
-	time.Sleep(time.Duration(700) * time.Millisecond)
-	if future.isTimeout() != true {
-		t.Errorf("wrong ResponseFuture's istimeout. want=%t, got=%t", true, future.isTimeout())
-	}
-
+	time.Sleep(time.Duration(1000) * time.Millisecond)
+	assert.True(t, future.isTimeout(), "ResponseFuture's istimeout should be true")
 }
 
 func TestResponseFutureWaitResponse(t *testing.T) {
-	future := NewResponseFuture(10, 500*time.Millisecond, nil)
+	future := NewResponseFuture(context.Background(), 10, 500*time.Millisecond, nil)
 	if _, err := future.waitResponse(); err != utils.ErrRequestTimeout {
 		t.Errorf("wrong ResponseFuture waitResponse. want=%v, got=%v",
 			utils.ErrRequestTimeout, err)
 	}
-	future = NewResponseFuture(10, 500*time.Millisecond, nil)
+	future = NewResponseFuture(context.Background(), 10, 500*time.Millisecond, nil)
 	responseError := errors.New("response error")
 	go func() {
 		time.Sleep(100 * time.Millisecond)
@@ -110,7 +109,7 @@ func TestResponseFutureWaitResponse(t *testing.T) {
 		t.Errorf("wrong ResponseFuture waitResponse. want=%v. got=%v",
 			responseError, err)
 	}
-	future = NewResponseFuture(10, 500*time.Millisecond, nil)
+	future = NewResponseFuture(context.Background(), 10, 500*time.Millisecond, nil)
 	responseRemotingCommand := NewRemotingCommand(202, nil, nil)
 	go func() {
 		time.Sleep(100 * time.Millisecond)
@@ -160,6 +159,8 @@ func TestCreateScanner(t *testing.T) {
 }
 
 func TestInvokeSync(t *testing.T) {
+	addr := ":3004"
+
 	clientSendRemtingCommand := NewRemotingCommand(10, nil, []byte("Hello RocketMQ"))
 	serverSendRemotingCommand := NewRemotingCommand(20, nil, []byte("Welcome native"))
 	serverSendRemotingCommand.Opaque = clientSendRemtingCommand.Opaque
@@ -167,24 +168,34 @@ func TestInvokeSync(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(1)
 	client := NewRemotingClient()
+
+	var clientSend sync.WaitGroup // blocking client send message until the server listen success.
+	clientSend.Add(1)
+
 	go func() {
-		receiveCommand, err := client.InvokeSync(":3000",
+		clientSend.Wait()
+		receiveCommand, err := client.InvokeSync(context.Background(), addr,
 			clientSendRemtingCommand, time.Second)
 		if err != nil {
 			t.Fatalf("failed to invoke synchronous. %s", err)
 		} else {
-			if !reflect.DeepEqual(&receiveCommand, &serverSendRemotingCommand) {
-				t.Errorf("remotingCommand prased in client is different from server. ")
-			}
+			assert.Equal(t, len(receiveCommand.ExtFields), 0)
+			assert.Equal(t, len(serverSendRemotingCommand.ExtFields), 0)
+			// in order to avoid the difference of ExtFields between the receiveCommand and serverSendRemotingCommand
+			// the ExtFields in receiveCommand is map[string]string(nil), but serverSendRemotingCommand is map[string]string{}
+			receiveCommand.ExtFields = nil
+			serverSendRemotingCommand.ExtFields = nil
+			assert.Equal(t, receiveCommand, serverSendRemotingCommand, "remotingCommand prased in client is different from server.")
 		}
 		wg.Done()
 	}()
 
-	l, err := net.Listen("tcp", ":3000")
+	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer l.Close()
+	clientSend.Done()
 	for {
 		conn, err := l.Accept()
 		if err != nil {
@@ -209,13 +220,15 @@ func TestInvokeSync(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to write body to conneciton.")
 			}
-			return
+			goto done
 		}
 	}
-	wg.Done()
+done:
+	wg.Wait()
 }
 
 func TestInvokeAsync(t *testing.T) {
+	addr := ":3006"
 	var wg sync.WaitGroup
 	cnt := 50
 	wg.Add(cnt)
@@ -225,7 +238,7 @@ func TestInvokeAsync(t *testing.T) {
 			time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
 			t.Logf("[Send: %d] asychronous message", index)
 			sendRemotingCommand := randomNewRemotingCommand()
-			err := client.InvokeAsync(":3000", sendRemotingCommand, time.Second, func(r *ResponseFuture) {
+			err := client.InvokeAsync(context.Background(), addr, sendRemotingCommand, time.Second, func(r *ResponseFuture) {
 				t.Logf("[Receive: %d] asychronous message response", index)
 				if string(sendRemotingCommand.Body) != string(r.ResponseCommand.Body) {
 					t.Errorf("wrong response message. want=%s, got=%s", string(sendRemotingCommand.Body),
@@ -239,7 +252,7 @@ func TestInvokeAsync(t *testing.T) {
 
 		}(i)
 	}
-	l, err := net.Listen("tcp", ":3000")
+	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		t.Fatalf("failed to create tcp network. %s", err)
 	}
@@ -276,6 +289,8 @@ done:
 }
 
 func TestInvokeAsyncTimeout(t *testing.T) {
+	addr := ":3002"
+
 	clientSendRemtingCommand := NewRemotingCommand(10, nil, []byte("Hello RocketMQ"))
 	serverSendRemotingCommand := NewRemotingCommand(20, nil, []byte("Welcome native"))
 	serverSendRemotingCommand.Opaque = clientSendRemtingCommand.Opaque
@@ -289,7 +304,7 @@ func TestInvokeAsyncTimeout(t *testing.T) {
 	clientSend.Add(1)
 	go func() {
 		clientSend.Wait()
-		err := client.InvokeAsync(":3000", clientSendRemtingCommand,
+		err := client.InvokeAsync(context.Background(), addr, clientSendRemtingCommand,
 			time.Duration(1000), func(r *ResponseFuture) {
 				assert.NotNil(t, r.Err)
 				assert.Equal(t, utils.ErrRequestTimeout, r.Err)
@@ -298,7 +313,7 @@ func TestInvokeAsyncTimeout(t *testing.T) {
 		assert.Nil(t, err, "failed to invokeSync.")
 	}()
 
-	l, err := net.Listen("tcp", ":3000")
+	l, err := net.Listen("tcp", addr)
 	assert.Nil(t, err)
 	defer l.Close()
 	clientSend.Done()
@@ -323,24 +338,30 @@ done:
 }
 
 func TestInvokeOneWay(t *testing.T) {
+	addr := ":3008"
 	clientSendRemtingCommand := NewRemotingCommand(10, nil, []byte("Hello RocketMQ"))
 
 	var wg sync.WaitGroup
 	wg.Add(1)
 	client := NewRemotingClient()
+
+	var clientSend sync.WaitGroup // blocking client send message until the server listen success.
+	clientSend.Add(1)
 	go func() {
-		err := client.InvokeOneWay(":3000", clientSendRemtingCommand, 3*time.Second)
+		clientSend.Wait()
+		err := client.InvokeOneWay(context.Background(), addr, clientSendRemtingCommand, 3*time.Second)
 		if err != nil {
 			t.Fatalf("failed to invoke synchronous. %s", err)
 		}
 		wg.Done()
 	}()
 
-	l, err := net.Listen("tcp", ":3000")
+	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer l.Close()
+	clientSend.Done()
 	for {
 		conn, err := l.Accept()
 		if err != nil {
@@ -357,8 +378,9 @@ func TestInvokeOneWay(t *testing.T) {
 				t.Errorf("wrong code. want=%d, got=%d", receivedRemotingCommand.Code,
 					clientSendRemtingCommand.Code)
 			}
-			return
+			goto done
 		}
 	}
-	wg.Done()
+done:
+	wg.Wait()
 }

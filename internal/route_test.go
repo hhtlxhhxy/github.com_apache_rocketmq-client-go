@@ -18,118 +18,51 @@ limitations under the License.
 package internal
 
 import (
-	. "github.com/smartystreets/goconvey/convey"
+	"context"
 	"testing"
+	"time"
+
+	"github.com/golang/mock/gomock"
+	"github.com/pkg/errors"
+	. "github.com/smartystreets/goconvey/convey"
+	"github.com/stretchr/testify/assert"
+
+	"github.com/apache/rocketmq-client-go/internal/remote"
+	"github.com/apache/rocketmq-client-go/primitive"
 )
 
-const (
-	topic = "TopicTest"
-)
+func TestQueryTopicRouteInfoFromServer(t *testing.T) {
+	Convey("marshal of TraceContext", t, func() {
 
-func init() {
-	srvs := []string{"127.0.0.1:9876"}
-	namesrv, err := NewNamesrv(srvs...)
-	if err != nil {
-		panic("register namesrv fail")
-	}
-	RegisterNamsrv(namesrv)
-}
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
 
-func TestAddBroker(t *testing.T) {
-	Convey("Given a starting topic", t, func() {
-		remoteRouteData, err := queryTopicRouteInfoFromServer(topic)
-		So(err, ShouldBeNil)
-		AddBroker(remoteRouteData)
+		remotingCli := remote.NewMockRemotingClient(ctrl)
 
-		Convey("brokerData from brokerAddressesMap by brokeName should be deep equal remoteBrokeData from server", func() {
-			for _, remoteBrokerData := range remoteRouteData.BrokerDataList {
-				brokerName := remoteBrokerData.BrokerName
-				brokerData, ok := brokerAddressesMap.Load(brokerName)
-				So(ok, ShouldBeTrue)
-				So(brokerData, ShouldResemble, remoteBrokerData)
-			}
-		})
-	})
-}
+		addr, err := primitive.NewNamesrvAddr("1.1.1.1:8880", "1.1.1.2:8880", "1.1.1.3:8880")
+		assert.Nil(t, err)
 
-func TestUpdateTopicRouteInfo(t *testing.T) {
-	Convey("Given a starting topic", t, func() {
-		updatedRouteData := UpdateTopicRouteInfo(topic)
+		namesrv, err := NewNamesrv(addr)
+		assert.Nil(t, err)
+		namesrv.nameSrvClient = remotingCli
 
-		Convey("updatedRouteData should be deep equal remoteRouteData", func() {
-			remoteRouteData, err := queryTopicRouteInfoFromServer(topic)
-			So(err, ShouldBeNil)
-			So(updatedRouteData, ShouldResemble, remoteRouteData)
-		})
-		Convey("updatedRouteData should be deep equal localRouteData", func() {
-			localRouteData, exist := routeDataMap.Load(topic)
-			So(exist, ShouldBeTrue)
-			So(updatedRouteData, ShouldResemble, localRouteData)
-		})
-	})
-}
+		Convey("When marshal producer trace data", func() {
 
-func TestFindBrokerAddrByTopic(t *testing.T) {
-	Convey("Given a starting topic", t, func() {
-		addr := FindBrokerAddrByTopic(topic)
-		remoteRouteData, err := queryTopicRouteInfoFromServer(topic)
-		So(err, ShouldBeNil)
-		brokerAddrList := remoteRouteData.BrokerDataList
-
-		Convey("addr from FindBrokerAddrByTopic should be contained in remoteRouteData", func() {
-			flag := false
-			for _, brokerData := range brokerAddrList {
-				for _, ba := range brokerData.BrokerAddresses {
-					if ba == addr {
-						flag = true
-						break
+			count := 0
+			remotingCli.EXPECT().InvokeSync(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+				func(ctx context.Context, addr string, request *remote.RemotingCommand, timeout time.Duration) (*remote.RemotingCommand, error) {
+					count++
+					if count < 3 {
+						return nil, errors.New("not existed")
 					}
-				}
-			}
-			So(flag, ShouldBeTrue)
-		})
-	})
-}
+					return &remote.RemotingCommand{
+						Code: ResTopicNotExist,
+					}, nil
+				}).Times(3)
 
-func TestFindBrokerAddrByName(t *testing.T) {
-	Convey("Given a starting topic", t, func() {
-		remoteRouteData, err := queryTopicRouteInfoFromServer(topic)
-		So(err, ShouldBeNil)
-		brokerAddrList := remoteRouteData.BrokerDataList
-
-		Convey("addr from FindBrokerAddrByName should be equal remoteBrokerAddr from server", func() {
-			for _, brokerData := range brokerAddrList {
-				brokerName := brokerData.BrokerName
-				addr := FindBrokerAddrByName(brokerName)
-				remoteBrokerAddr := brokerData.BrokerAddresses[MasterId]
-				So(addr, ShouldEqual, remoteBrokerAddr)
-			}
-		})
-	})
-}
-
-func TestFindBrokerAddressInSubscribe(t *testing.T) {
-	Convey("Given a starting topic", t, func() {
-		remoteRouteData, err := queryTopicRouteInfoFromServer(topic)
-		So(err, ShouldBeNil)
-		brokerAddrList := remoteRouteData.BrokerDataList
-
-		Convey("range BrokerAddress and compare them in turn", func() {
-			for _, brokerData := range brokerAddrList {
-				brokerName := brokerData.BrokerName
-				for id, ba := range brokerData.BrokerAddresses {
-					findBrokerRes := FindBrokerAddressInSubscribe(brokerName, id, true)
-					res := &FindBrokerResult{
-						BrokerAddr:    ba,
-						Slave:         false,
-						BrokerVersion: findBrokerVersion(brokerName, ba),
-					}
-					if id != MasterId {
-						res.Slave = true
-					}
-					So(findBrokerRes, ShouldResemble, res)
-				}
-			}
+			data, err := namesrv.queryTopicRouteInfoFromServer("notexisted")
+			assert.Nil(t, data)
+			assert.Equal(t, ErrTopicNotExist, err)
 		})
 	})
 }
